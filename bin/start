@@ -1,0 +1,248 @@
+#!/bin/bash
+
+set -e
+
+dump_var() {
+    local var_names=("$@")
+    for var_name in "${var_names[@]}"; do
+        echo "$var_name: ${!var_name}"
+    done
+}
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$DIR/.." && pwd)"
+ENV_FILE="$PROJECT_DIR/.env"
+DEFAULT_ENV_NAME=".env.def"
+DEFAULT_ENV_FILE="$PROJECT_DIR/$DEFAULT_ENV_NAME"
+
+START_ONLY=$([ $# -eq 0 ] && echo true || echo false)
+BUILD=false
+HOSTNAME=''
+PORT=''
+PASSWORD=''
+WS=true
+WS_PATH=''
+WEB_SSL_PORT=''
+SS=false
+SS_PASSWORD=''
+
+usage() {
+    echo "简述：Docker compose项目。不提供参数时使用start启动项目，提供参数时使用up启动项目。参数值会覆盖.env文件中的值，密码不会写入文件中。"
+    echo "Usage: $0 [-p Trojan端口] [-h 主机域名] [-P 访问密码] [-b|--build 重新构建] [extra_args...]"
+    echo "  -p: Trojan端口"
+    echo "  -h: 主机域名"
+    echo "  -P: 访问密码。未指定密码时会生成随机密码，同时也覆盖旧密码"
+    echo "  -w|--wspath: Websocket路径，未提供则生成随机路径"
+    echo "  --no-ws: 关闭 Websocket （WS）连接"
+    echo "  --ssl-port: 网页HTTPS连接端口，不要和Trojan端口一样"
+    echo "  -s: Shadowsocks密码，提供密码会自动开启AEAD加密"
+    echo "  --ss: 开启Shadowsocks加密"
+    echo "  --up: 以UP方式启动。方便直接重置随机密码"
+    echo "  -b|--build: 重新构建镜像并启动"
+    exit 1
+}
+
+PARSED_OPTIONS=$(getopt -o p:h:P:w:bs: --long build,help,no-ws,ws-path:,ssl-port:,ss,up -- "$@")
+if [ $? -ne 0 ]; then
+    echo "无法解析选项"
+    exit 1
+fi
+eval set -- "$PARSED_OPTIONS"
+while true; do
+    case "$1" in
+        -p)
+            PORT="$2"
+            shift 2
+            ;;
+        -h)
+            HOSTNAME="$2"
+            shift 2
+            ;;
+        -P)
+            PASSWORD="$2"
+            shift 2
+            ;;
+        -w|--ws-path)
+            WS_PATH="$2"
+            shift 2
+            ;;
+        --no-ws)
+            WS=false
+            shift
+            ;;
+        --ssl-port)
+            WEB_SSL_PORT="$2"
+            shift 2
+            ;;
+        --s)
+            SS_PASSWORD="$2"
+            shift 2
+            ;;
+        --ss)
+            SS=true
+            shift
+            ;;
+        --up)
+            START_ONLY=false
+            shift
+            ;;
+        -b|--build)
+            BUILD=true
+            shift
+            ;;
+        --help)
+            usage
+            shift
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            echo "未知选项: $1"
+            exit 1
+            ;;
+    esac
+done
+EXTRA_ARGS="$@"
+
+dump_vars() {
+    dump_var 'EXTRA_ARGS' 'PORT' 'HOSTNAME' 'PASSWORD' 'BUILD' 'START_ONLY'
+}
+
+generate_password() {
+    # openssl rand -base64 12
+    uuidgen
+}
+
+generate_ws_path(){
+   echo "/wsol-$(shuf -i 10000-99999 -n 1)"
+}
+
+get_env_var() {
+  local var_name=$1
+  local var_value=$(grep -E "^${var_name}=" "$ENV_FILE"  | sed -E "s/^${var_name}=(.*)/\1/")
+  echo "$var_value"
+}
+
+setup_env() {
+    if [ ! -f "$ENV_FILE" ]; then
+        echo -e "\033[32m::\033[0m不存在 .env 文件，正在从 $DEFAULT_ENV_NAME 复制..."
+        if [ -f "$DEFAULT_ENV_FILE" ]; then
+            cp "$DEFAULT_ENV_FILE" "$ENV_FILE"
+            echo -e "\033[32m::\033[0m已创建 .env 文件"
+        else
+            echo -e "\033[31m::\033[0m错误：不存在 $DEFAULT_ENV_NAME 文件"
+            exit 1
+        fi
+    fi
+
+    local VARS=("HOSTNAME" "PORT" "WS" "WS_PATH" "WEB_SSL_PORT" "SS" "SS_PASSWORD")
+    local env_content=$(cat "$ENV_FILE")
+    echo -e "\033[32m::\033[0m正在更新 .env 文件..."
+    for var in "${VARS[@]}"; do
+        if [ -n "${!var}" ]; then
+            local escaped_value=$(printf '%s\n' "${!var}" | sed 's:[\/&]:\\&:g')
+            env_content=$(echo "$env_content" | sed -E "s/^($var=).*/\1$escaped_value/")
+        fi
+    done
+    echo "$env_content" > "$ENV_FILE"
+
+    echo -e "\033[32m::\033[0m已更新 .env 文件"
+}
+
+docker_up() {
+    if [ -z "$PASSWORD" ]; then
+        PASSWORD=$(generate_password)
+    fi
+    if [ -z "$WS_PATH" ]; then
+        WS_PATH=$(generate_ws_path)
+    fi
+    if [ -n "$SS_PASSWORD" ]; then
+        SS=true
+    fi
+    export PASSWORD
+    setup_env
+    echo $WEB_SSL_PORT
+    docker-compose up -d $EXTRA_ARGS
+}
+
+to_pascal_case() {
+    local input="$1"
+    local output=""
+    local IFS='.'
+    read -ra parts <<< "$input"
+    for part in "${parts[@]}"; do
+        output+=$(echo "${part:0:1}" | tr '[:lower:]' '[:upper:]')
+        output+=$(echo "${part:1}" | tr '[:upper:]' '[:lower:]')
+    done
+    echo "$output"
+}
+
+domain_to_agent_name() {
+    local domain="$1"
+    local subdomain=""
+    local main_domain=""
+    if [[ "$domain" =~ ^([^.]+)\.([^.]+\.[^.]+)$ ]]; then
+        subdomain="${BASH_REMATCH[1]}"
+        main_domain="${BASH_REMATCH[2]}"
+    elif [[ "$domain" =~ ^([^.]+\.[^.]+)$ ]]; then
+        main_domain="${BASH_REMATCH[1]}"
+    fi
+    if [[ -n "$subdomain" ]]; then
+        to_pascal_case "$subdomain"
+    else
+        to_pascal_case "${main_domain%.*}"
+    fi
+}
+
+build_agent_node_yml() {
+   if [[ $WS == true ]]; then
+        local network='ws'
+        local wsheader=", headers: { Host: $WS_HOST }"
+        local wsopt="
+    ws-opts: { path: '$WS_PATH' ${WS_HOST:+$wsheader} },"
+    else
+        local network='tcp'
+    fi
+    echo "
+{
+    name: '$(domain_to_agent_name $HOSTNAME)',
+    type: trojan,
+    server: $HOSTNAME,
+    port: $PORT,
+    password: $PASSWORD,
+    udp: true,
+    network: $network, $wsopt
+    sni: $SSL_SNI,
+    skip-cert-verify: false
+}" | tr -s '[:space:]' ' '
+}
+
+if [[ $BUILD == true ]]; then
+    EXTRA_ARGS="$EXTRA_ARGS --build"
+fi
+
+if [[ $START_ONLY == true ]]; then
+    docker-compose start $EXTRA_ARGS
+else
+    docker_up
+fi
+
+if docker-compose ps | grep -q "Up"; then
+    docker image prune -f
+    source $ENV_FILE
+    echo -e "Trojan服务已启动..."
+    echo -e "主域: \033[32m$HOSTNAME\033[0m"
+    echo -e "端口: \033[32m$PORT\033[0m"
+    echo -e "密码: \033[32m${PASSWORD:-未变更}\033[0m"
+    if [[ $WS == true ]]; then
+        echo -e "WS路径: \033[32m${WS_PATH}\033[0m"
+        echo -e "WS域名: \033[32m${WS_HOST}\033[0m"
+    else
+        echo -e "\033[30m待优化: 开启Websocket(WS)\033[0m"
+    fi
+    echo -e "节点信息: \033[32m$(build_agent_node_yml)\033[0m"
+else
+    echo -e "\033[31m服务启动失败，请检查日志。\033[0m"
+fi

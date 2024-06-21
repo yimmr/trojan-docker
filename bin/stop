@@ -1,0 +1,9 @@
+#!/bin/bash
+
+if [ "$1" == "down" ]; then
+    echo "下线并移除容器服务..."
+    docker-compose down
+else
+    echo "暂停容器服务..."
+    docker-compose stop
+fi

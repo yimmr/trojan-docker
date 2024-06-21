@@ -1,0 +1,47 @@
+#!/bin/bash
+
+get_container_id(){
+    local name=$1
+    if [ $name == 'web' ] || [ $name == 'trojan' ]; then
+        name="trojan-$name-1"
+    fi
+    docker ps -aq --filter name="$name"
+}
+
+type=$1
+shift
+container_name=${1:-trojan}
+shift
+container_id="$(get_container_id $container_name)"
+
+case $type in
+    id)
+        echo $container_id
+        ;;
+    log)
+        docker logs $container_id $@
+        ;;
+    conf)
+        container_id="$(get_container_id web)"
+        docker exec $container_id cat /etc/nginx/conf.d/default.conf
+        ;;
+    conf2)
+        container_id="$(get_container_id trojan)"
+        docker exec $container_id cat /etc/trojan-go/config.json
+        ;;
+    term)
+        docker exec -it -u root $container_id ${@:-sh}
+        ;;
+    exec)
+        docker exec -it -u root $container_id $@
+        ;;
+    *)
+        cat <<EOF
+小工具用法介绍。传参支持简写容器名，如：web,trojan
+    log [name] [args] 输出指定的当前日志
+    conf 输出web的nginx配置文件
+    conf2 输出Trojan的配置文件
+    exec 容器内执行命令
+EOF
+        ;;
+esac

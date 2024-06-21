@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# 进入容器终端
+
+
+./bin/tool term $@

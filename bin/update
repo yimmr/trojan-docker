@@ -1,0 +1,56 @@
+#!/bin/bash
+
+set -e
+
+original_user=${SUDO_USER:-$(whoami)}
+
+merge_env() {
+    local oldFile=$1
+    local newFile=$2
+    local outputFile=$oldFile
+    local tempFile=$(mktemp)
+    echo "正在合并 $newFile >> $outputFile"
+    while IFS= read -r line; do
+        # 跳过空行和注释行
+        if [[ -z "$line" || "$line" =~ ^# ]]; then
+            echo "$line" >> "$tempFile"
+            continue
+        fi
+        # 解析环境变量名和值
+        local varName=$(echo "$line" | cut -d '=' -f 1)
+        local varValue=$(echo "$line" | cut -d '=' -f 2-)
+        # 检查旧文件是否存在相同的变量名
+        if grep -q "^$varName=" "$oldFile"; then
+            # 从旧文件中获取变量值
+            local newValue=$(grep "^$varName=" "$oldFile" | cut -d '=' -f 2-)
+            echo "$varName=$newValue" >> "$tempFile"
+        else
+            echo "$line" >> "$tempFile"
+        fi
+    done < "$newFile"
+    mv "$tempFile" "$outputFile"
+    sudo chown $original_user:$original_user $outputFile
+    rm -f $tempFile
+    echo "合并完成"
+}
+
+has_file_changed() {
+    git diff --name-only HEAD@{1} HEAD | grep -q "$1"
+}
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$DIR/.." && pwd)"
+ENV_FILE="$PROJECT_DIR/.env"
+DEFAULT_ENV_NAME=".env.def"
+DEFAULT_ENV_FILE="$PROJECT_DIR/$DEFAULT_ENV_NAME"
+
+git pull
+
+if has_file_changed $DEFAULT_ENV_NAME; then
+    echo "$DEFAULT_ENV_NAME 已变更"
+    merge_env $ENV_FILE $DEFAULT_ENV_FILE
+else
+    echo "$DEFAULT_ENV_NAME 未更新，不需合并"
+fi
+
+./bin/restart $@

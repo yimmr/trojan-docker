@@ -1,0 +1,294 @@
+#!/bin/bash
+
+if ! command -v docker &> /dev/null
+then
+    echo "请先安装Docker"
+    exit 1
+fi
+
+set -e
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$DIR/.." && pwd)"
+SELF_PATH=$(realpath $0)
+original_user=${SUDO_USER:-$(whoami)}
+
+DOCKER_IMAGE=certbot/dns-cloudflare
+CERTBOT_DIR=$PROJECT_DIR/certbot
+WEBROOT_PATH=$PROJECT_DIR/nginx/web
+CLOUDFLARE_INI=$CERTBOT_DIR/app/cloudflare.ini
+
+CERT_DIR=$PROJECT_DIR/cert
+DEPLOD_FLAG=/app/.deploy-hook
+CAN_RESTART=true
+
+VOLUME_ARR=(
+    "$CERTBOT_DIR/letsencrypt:/etc/letsencrypt"
+    "$CERTBOT_DIR/lib:/var/lib/letsencrypt"
+    "$CERTBOT_DIR/app:/app"
+    "$WEBROOT_PATH:/var/www/html"
+)
+VOLUMES=""
+for volume in "${VOLUME_ARR[@]}"; do
+    VOLUMES="$VOLUMES -v "$volume""
+done
+
+usage() {
+    echo "Usage: $0 {apply|renew|revoke|setauto|deploy} -d domain -t token -m mail -- [extra_args]"
+    echo "  auto: 申请证书并配置自动更新"
+    echo "  apply: 申请新证书"
+    echo "  renew: 更新现有证书"
+    echo "  revoke: 吊销证书"
+    echo "  setauto: 设置自动更新任务"
+    echo "  rmauto: 删除自动更新任务"
+    echo "  deploy: 部署证书"
+    echo "  -d: 域名"
+    echo "  -m: 邮箱号，用于接收证书通知，不提供则收不到"
+    echo "  -t: Cloudflare令牌"
+    echo "  -r: true|false 部署后是否重启"
+    echo "  --: 其他参数传给 certbot"
+    exit 1
+}
+
+dump_var() {
+    local var_names=("$@")
+    for var_name in "${var_names[@]}"; do
+        echo "$var_name: ${!var_name}"
+    done
+}
+
+create_cloudflare_ini_if() {
+    local token=$1
+    local file=$CLOUDFLARE_INI
+    local cfini_dir="$(dirname "$file")"
+    if [ -n "$token" ]; then
+        if [ ! -d "$cfini_dir" ]; then
+            sudo mkdir -p "$cfini_dir"
+        fi
+        sudo chmod 0777 $cfini_dir
+        echo "dns_cloudflare_api_token=$token" > $file
+        sudo chmod 600 $file
+    fi
+}
+
+deploy_if() {
+    local flag_file="$CERTBOT_DIR$DEPLOD_FLAG"
+    if [ -f "$flag_file" ]; then
+        deploy $@
+    fi
+    sudo rm -rf $flag_file
+}
+
+deploy() {
+    local domains=$1
+    local ssl_path="${2:-$CERTBOT_DIR}/letsencrypt/live"
+    local to_path="${3:-$CERT_DIR}"
+    echo -e "\033[32m::\033[0m开始复制新证书到部署目录..."
+    IFS=',' read -r -a domain_array <<< "$domains"
+    local override=0
+    for domain in "${domain_array[@]}"; do
+        DOMAIN_DIR="$ssl_path/$domain"
+        if [ -d "$DOMAIN_DIR" ]; then
+            cp -f $DOMAIN_DIR/fullchain.pem $to_path/fullchain.pem
+            cp -f $DOMAIN_DIR/privkey.pem $to_path/privkey.pem
+            override=1
+        else
+            echo "已忽略不存在的证书目录 $DOMAIN_DIR ..."
+        fi
+    done
+    if [ $override != 0 ]; then
+        echo -e "\033[32m::\033[0m已复制新证书到部署目录"
+        if [[ $CAN_RESTART == true ]]; then
+            $DIR/restart
+        fi
+    else
+        echo -e "\033[32m::\033[0m未复制新证书到部署目录"
+    fi
+}
+
+certbot_get_base(){
+    local action=$1
+    shift
+    local deploy_script="touch $DEPLOD_FLAG"
+
+    if [ -f "$CLOUDFLARE_INI" ] && [ -s "$CLOUDFLARE_INI" ]; then
+        docker run -it --rm $VOLUMES $DOCKER_IMAGE $action \
+          --dns-cloudflare --dns-cloudflare-credentials /app/cloudflare.ini \
+          --agree-tos --no-eff-email \
+          --deploy-hook "$deploy_script" \
+          $@
+    else
+        # 需要适配调整，网站web目录要和certbot容器共享
+        # - 未运行80端口网站，可能要先创建共享web目录的网站（未确定）
+        # - 已运行80端口网站，应该不需下线或或其他操作
+        docker run -it --rm $VOLUMES $DOCKER_IMAGE chmod 0755 /etc/letsencrypt/{live,archive} && $action \
+          --webroot --webroot-path=/var/www/html \
+          --agree-tos --no-eff-email \
+          --deploy-hook "$deploy_script" \
+          $@
+    fi
+
+    if [ $? -ne 0 ]; then
+        exit 1
+    fi
+}
+
+# 申请证书
+apply_cert() {
+    local domain=$1
+    shift
+    certbot_get_base certonly -d $domain $@
+    deploy_if $domain
+}
+
+# 更新证书
+renew_cert() {
+    local domain=$1
+    shift
+    certbot_get_base certonly --keep-until-expiring -d $domain $@
+    deploy_if $domain
+}
+
+# 吊销证书
+revoke_cert() {
+    local domain=$1
+    shift
+    docker run -it --rm $VOLUMES $DOCKER_IMAGE revoke --agree-tos --non-interactive --cert-path /etc/letsencrypt/live/$domain/fullchain.pem
+    if [ $? -ne 0 ]; then
+        exit 1
+    fi
+}
+
+crontab_task_exists() {
+    local task="$1"
+    crontab -u "$original_user" -l 2>/dev/null | grep -qF "$task" > /dev/null 2>&1
+    return $?
+}
+
+crontab_get() {
+    crontab -u "$original_user" -l
+}
+
+# 设置自动更新
+setup_auto_renew() {
+    local domain=$1
+    local task="$SELF_PATH renew -d $domain -- -q"
+    echo "配置定时任务：自动更新证书 $task"
+    if crontab_task_exists "$task"; then
+        echo -e "\033[32m::\033[0m任务已经存在，不需要添加"
+    else
+        # 生成随机的睡眠时间
+        SLEEPTIME=$(awk 'BEGIN{srand(); print int(rand()*(3600+1))}')
+        (crontab_get 2>/dev/null; echo "0 0 * * * sleep $SLEEPTIME && $task") | crontab -u "$original_user" -
+        echo -e "\033[32m::\033[0m任务已添加"
+    fi
+    # crontab_get
+}
+
+# 删除自动更新
+remove_auto_renew() {
+    local domain=$1
+    local task="$SELF_PATH renew -d $domain -- -q"
+    echo "删除定时任务：自动更新证书 $task"
+    crontab_get 2>/dev/null | grep -vF " && $task" | crontab -u "$original_user" -
+    if crontab_task_exists "$task"; then
+        echo -e "\033[32m::\033[0m任务未能删除"
+    else
+        echo -e "\033[32m::\033[0m任务已删除"
+    fi
+    # crontab_get
+}
+
+main() {
+    local ACTION=$1
+    local DOMAIN=''
+    local MAIL=''
+    local CF_TOKEN=''
+    shift
+    local PARSED_OPTIONS=$(getopt -o d:m:t:r:h --long help -- "$@")
+    if [ $? -ne 0 ]; then
+        echo "无法解析选项"
+        exit 1
+    fi
+    eval set -- "$PARSED_OPTIONS"
+    while true; do
+        case "$1" in
+            -d) DOMAIN="$2"
+                shift 2
+                ;;
+            -t) CF_TOKEN="$2"
+                shift 2
+                ;;
+            -m) MAIL="$2"
+                shift 2
+                ;;
+            -r) CAN_RESTART="$2"
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                shift
+                ;;
+            --)
+                shift
+                break
+                ;;
+            *)
+                echo "未知选项: $1"
+                exit 1
+                ;;
+        esac
+    done
+    local EXTRA_ARGS="$@"
+
+    if [ -z "$DOMAIN" ]; then
+        usage
+    fi
+
+    # 邮箱通知
+    local MAIL_ARG=''
+    if [ -n "$MAIL" ]; then
+        MAIL_ARG="--email $MAIL"
+    else
+        MAIL_ARG="--register-unsafely-without-email"
+    fi
+
+    # dump_var DOMAIN MAIL CF_TOKEN CAN_RESTART MAIL_ARG
+    # exit 1
+
+    create_cloudflare_ini_if $CF_TOKEN
+
+    case $ACTION in
+    apply|auto)
+        apply_cert $DOMAIN $MAIL_ARG $EXTRA_ARGS
+        if [ "$ACTION" == "auto" ]; then
+            setup_auto_renew $DOMAIN
+        fi
+        ;;
+    renew)
+        renew_cert $DOMAIN $EXTRA_ARGS
+        ;;
+    revoke)
+        revoke_cert $DOMAIN $EXTRA_ARGS
+        ;;
+    setauto)
+        setup_auto_renew $DOMAIN
+        ;;
+    rmauto)
+        remove_auto_renew $DOMAIN
+        ;;
+    deploy)
+        deploy $DOMAIN
+        ;;
+    *)
+        usage
+        ;;
+    esac
+}
+
+main $@
+
+
+
+
+

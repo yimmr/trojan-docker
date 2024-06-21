@@ -1,0 +1,60 @@
+{
+    "run_type": "server",
+    "local_addr": "0.0.0.0",
+    "local_port": 443,
+    "remote_addr": "$REMOTE_ADDR",
+    "remote_port": $REMOTE_PORT,
+    "password": [
+        "$TROJAN_PASSWORD"
+    ],
+    "log_level": 1,
+    "ssl": {
+        "cert": "/etc/trojan/cert/fullchain.pem",
+        "key": "/etc/trojan/cert/privkey.pem",
+        "sni": "${TROJAN_HOST}",
+        "verify_hostname": true,
+        "verify": true,
+        "cipher": "",
+        "alpn": [
+            "h2",
+            "http/3"
+        ],
+        "reuse_session": true,
+        "session_timeout": 3600,
+        "session_ticket": false,
+        "fallback_addr": "$FALLBACK_ADDR",
+        "fallback_port": $FALLBACK_PORT
+    },
+    "tcp": {
+        "prefer_ipv4": false,
+        "no_delay": true,
+        "keep_alive": true,
+        "fast_open_qlen": 30
+    },
+    "websocket": {
+        "enabled": $WS,
+        "path": "$WS_PATH",
+        "host": "$WS_HOST"
+    },
+    "shadowsocks": {
+        "enabled": $SS,
+        "method": "AES-128-GCM",
+        "password": "$SS_PASSWORD"
+    },
+    "mysql": {
+        "enabled": false,
+        "server_addr": "127.0.0.1",
+        "server_port": 3306,
+        "database": "trojan",
+        "username": "trojan",
+        "password": "",
+        "key": "",
+        "cert": "",
+        "ca": ""
+    },
+    "api": {
+        "enabled": false,
+        "api_addr": "127.0.0.1",
+        "api_port": 10000
+    }
+}
