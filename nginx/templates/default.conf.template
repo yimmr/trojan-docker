@@ -10,8 +10,8 @@ server {
 
 server {
     # 此端口仅为支持Trojan在内网使用HTTP访问
-    listen ${TROJAN_WEB_PORT} ssl http2;
-    listen [::]:${TROJAN_WEB_PORT} ssl http2;
+    listen ${TROJAN_WEB_PORT} http2;
+    listen [::]:${TROJAN_WEB_PORT} http2;
 
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
