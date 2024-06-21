@@ -15,15 +15,21 @@ ENV_FILE="$PROJECT_DIR/.env"
 DEFAULT_ENV_NAME=".env.def"
 DEFAULT_ENV_FILE="$PROJECT_DIR/$DEFAULT_ENV_NAME"
 
+get_env_var() {
+  local var_name=$1
+  local var_value=$(grep -E "^${var_name}=" "$ENV_FILE"  | sed -E "s/^${var_name}=(.*)/\1/")
+  echo "$var_value"
+}
+
 START_ONLY=$([ $# -eq 0 ] && echo true || echo false)
 BUILD=false
 HOSTNAME=''
 PORT=''
 PASSWORD=''
-WS=true
+WS=`get_env_var WS`
 WS_PATH=''
 WEB_SSL_PORT=''
-SS=false
+SS=`get_env_var SS`
 SS_PASSWORD=''
 
 usage() {
@@ -37,12 +43,13 @@ usage() {
     echo "  --ssl-port: 网页HTTPS连接端口，不要和Trojan端口一样"
     echo "  -s: Shadowsocks密码，提供密码会自动开启AEAD加密"
     echo "  --ss: 开启Shadowsocks加密"
+    echo "  --no-ss: 关闭Shadowsocks加密"
     echo "  --up: 以UP方式启动。方便直接重置随机密码"
     echo "  -b|--build: 重新构建镜像并启动"
     exit 1
 }
 
-PARSED_OPTIONS=$(getopt -o p:h:P:w:bs: --long build,help,no-ws,ws-path:,ssl-port:,ss,up -- "$@")
+PARSED_OPTIONS=$(getopt -o p:h:P:w:s:b --long build,help,no-ws,ws-path:,ssl-port:,ss,no-ss,up -- "$@")
 if [ $? -ne 0 ]; then
     echo "无法解析选项"
     exit 1
@@ -74,9 +81,13 @@ while true; do
             WEB_SSL_PORT="$2"
             shift 2
             ;;
-        --s)
+        -s)
             SS_PASSWORD="$2"
             shift 2
+            ;;
+        --no-ss)
+            SS=false
+            shift
             ;;
         --ss)
             SS=true
@@ -107,7 +118,7 @@ done
 EXTRA_ARGS="$@"
 
 dump_vars() {
-    dump_var 'EXTRA_ARGS' 'PORT' 'HOSTNAME' 'PASSWORD' 'BUILD' 'START_ONLY'
+    dump_var 'EXTRA_ARGS' 'PORT' 'HOSTNAME' 'PASSWORD' 'SS' 'WS' 'BUILD' 'START_ONLY'
 }
 
 generate_password() {
@@ -117,12 +128,6 @@ generate_password() {
 
 generate_ws_path(){
    echo "/wsol-$(shuf -i 10000-99999 -n 1)"
-}
-
-get_env_var() {
-  local var_name=$1
-  local var_value=$(grep -E "^${var_name}=" "$ENV_FILE"  | sed -E "s/^${var_name}=(.*)/\1/")
-  echo "$var_value"
 }
 
 setup_env() {
@@ -232,17 +237,24 @@ fi
 if docker-compose ps | grep -q "Up"; then
     docker image prune -f
     source $ENV_FILE
+
+    network_protocol=`[[ $WS == true ]] && echo 'ws' || echo 'tcp'`
     echo -e "Trojan服务已启动..."
     echo -e "主域: \033[32m$HOSTNAME\033[0m"
     echo -e "端口: \033[32m$PORT\033[0m"
-    echo -e "密码: \033[32m${PASSWORD:-未变更}\033[0m"
+    echo -e "密码: \033[32m${PASSWORD:-无变化}\033[0m"
+    echo -e "SNI: \033[32m$SSL_SNI\033[0m"
+    echo -e "传输协议: \033[32m$network_protocol\033[0m"
+    echo -e "\033[30mAlpn: 留空或选h3,h2\033[0m"
     if [[ $WS == true ]]; then
-        echo -e "WS路径: \033[32m${WS_PATH}\033[0m"
-        echo -e "WS域名: \033[32m${WS_HOST}\033[0m"
-    else
-        echo -e "\033[30m待优化: 开启Websocket(WS)\033[0m"
+        echo -e "WS路径: \033[32m$WS_PATH\033[0m"
+        echo -e "WS域名: \033[32m$WS_HOST\033[0m"
     fi
-    echo -e "节点信息: \033[32m$(build_agent_node_yml)\033[0m"
+    if [[ $SS == true ]]; then
+        echo -e "\033[30m已开启Shadowsocks(SS)加密\033[0m"
+        echo -e "SS密码: \033[32m$SS_PASSWORD\033[0m"
+    fi
+    echo -e "Clash节点: \033[32m$(build_agent_node_yml)\033[0m"
 else
     echo -e "\033[31m服务启动失败，请检查日志。\033[0m"
 fi

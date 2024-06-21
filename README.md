@@ -102,6 +102,9 @@ sudo bash -c "$(wget -qO- https://raw.githubusercontent.com/yimmr/trojan-docker/
 # 启动服务。不带参数仅简单启动，带参数将会重置客户端访问密码
 sudo bin/start
 
+# 重建容器并启动服务（修改.env文件后需要重建容器）
+sudo bin/start --up
+
 # 重建镜像并启动服务
 sudo bin/start --build
 
