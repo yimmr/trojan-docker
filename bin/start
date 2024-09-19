@@ -222,7 +222,7 @@ domain_to_agent_name_with_icon(){
     local name=$(domain_to_agent_name "$@")
     for key in "${!NodeIconMap[@]}"; do
         if [[ "${name,,}" == "${key,,}"* ]]; then
-            name="${name}${NodeIconMap[$key]}"
+            name="${NodeIconMap[$key]}${name}"
             break
         fi
     done
