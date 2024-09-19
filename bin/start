@@ -194,11 +194,39 @@ domain_to_agent_name() {
     elif [[ "$domain" =~ ^([^.]+\.[^.]+)$ ]]; then
         main_domain="${BASH_REMATCH[1]}"
     fi
+
     if [[ -n "$subdomain" ]]; then
         to_pascal_case "$subdomain"
     else
         to_pascal_case "${main_domain%.*}"
     fi
+}
+
+declare -A NodeIconMap=(
+  ["cn"]='🇨🇳'
+  ["hk"]='🇭🇰'
+  ["sg"]='🇸🇬'
+  ["us"]='🇺🇸'
+  ["jp"]='🇯🇵'
+  ["kr"]='🇰🇷'
+  ["gb"]='🇬🇧'
+  ["fr"]='🇫🇷'
+  ["de"]='🇩🇪'
+  ["ie"]='🇮🇪'
+  ["ca"]='🇨🇦'
+  ["in"]='🇮🇳'
+)
+
+domain_to_agent_name_with_icon(){
+    local icon=""
+    local name=$(domain_to_agent_name "$@")
+    for key in "${!NodeIconMap[@]}"; do
+        if [[ "${name,,}" == "${key,,}"* ]]; then
+            name="${name}${NodeIconMap[$key]}"
+            break
+        fi
+    done
+    echo "$name"
 }
 
 build_agent_node_yml() {
@@ -212,7 +240,7 @@ build_agent_node_yml() {
     fi
     echo "
 {
-    name: '$(domain_to_agent_name $HOSTNAME)',
+    name: '$(domain_to_agent_name_with_icon $HOSTNAME)',
     type: trojan,
     server: $HOSTNAME,
     port: $PORT,
