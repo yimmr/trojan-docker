@@ -1,0 +1,31 @@
+#!/bin/bash
+if [ -z "$1" ]; then
+    echo "Usage: $0 <project_directory>"
+    exit 1
+fi
+
+PROJECT_DIR=$(realpath "$1")
+PROJECT_NAME=$(basename "$PROJECT_DIR")
+SERVICE_NAME="${PROJECT_NAME}-restart.service"
+
+cat > /tmp/$SERVICE_NAME << EOF
+[Unit]
+Description=Auto restart ${PROJECT_NAME} service
+After=network.target
+
+[Service]
+Type=oneshot
+User=$USER
+WorkingDirectory=$PROJECT_DIR
+ExecStart=/usr/bin/sudo $PROJECT_DIR/bin/restart
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo mv /tmp/$SERVICE_NAME /etc/systemd/system/
+sudo chmod 644 /etc/systemd/system/$SERVICE_NAME
+sudo systemctl daemon-reload
+sudo systemctl enable $SERVICE_NAME
+sudo systemctl start $SERVICE_NAME

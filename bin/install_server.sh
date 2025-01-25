@@ -142,3 +142,4 @@ if [ -n "$password" ]; then
 fi
 
 ./bin/start $args --build
+./bin/auto-restart $PROJECT_DIR
