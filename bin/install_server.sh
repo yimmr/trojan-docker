@@ -65,6 +65,12 @@ then
     mypkm install -y git-all
 fi
 
+if ! command -v uuidgen &> /dev/null
+then
+    echo "正在安装uuidgen"
+    sudo apt update -y && sudo apt install -y uuid-runtime
+fi
+
 if ! command -v crontab &> /dev/null
 then
     echo "正在安装cron定时任务管理"
